@@ -2,6 +2,11 @@
 import os
 from ultralytics import YOLO
 from datetime import datetime
+import time
+import torch
+import numpy as np
+
+os.makedirs("./datasets/test", exist_ok=True)
 
 # 測試資料根目錄
 base_root = "./datasets/testing_images"
@@ -28,61 +33,67 @@ all_files.sort()
 print(f"來源根目錄：{patient_root}")
 print(f"共收集到 {len(all_files)} 張圖片")
 
-# 載入模型
-model = YOLO("yolo12n.pt")  # 換成你的模型檔案
-
-# 一次性預測所有圖片
-results = model.predict(
-    source=all_files,   # 直接丟入圖片清單
-    imgsz=640,
-    batch=16,
-    device=0,            # GPU:0，如果要用 CPU 改成 device="cpu"
-    stream=True
-)
-print("✅ 預測完成！")
-print("測試集圖片數量 :", len(all_files))
-
-
-# # 分兩批
-# half = len(all_files) // 2
-# batch1 = all_files[:half]
-# batch2 = all_files[half:]
-
-# print(f"➡️ 第一批 {len(batch1)} 張")
-# results1 = model.predict(
-#     source=batch1,
-#     imgsz=640,
-#     batch=16,
-#     device=0,
-#     stream=True
-# )
-
-# print(f"➡️ 第二批 {len(batch2)} 張")
-# results2 = model.predict(
-#     source=batch2,
-#     imgsz=640,
-#     batch=16,
-#     device=0,
-#     stream=True
-# )
-# print("✅ 兩批預測完成！")
-# print("測試集圖片數量 :", len(all_files))
-
 # 載入模型（請確認 best.pt 檔案放在當前工作目錄，或改成絕對路徑）
-model = YOLO("./runs/detect/train/weights/best.pt")
+model = YOLO("./runs/detect/train14/weights/best.pt")
+
+# 開始計時
+start_time = time.time()
 
 # 執行推論
 results = model.predict(
-    source="./datasets/testing_images/*/*",  # 測試圖片資料夾
-    save=True,                          # 是否輸出預測結果圖片
-    imgsz=640,                          # 輸入圖片大小
-    device=0                            # 使用 GPU:0；若要用 CPU，改成 device="cpu"
+    source="./datasets/testing_images/*/*", # 測試圖片資料夾
+    imgsz=640,                              # 輸入圖片大小
+    batch=16,                               # 批次大小，視 GPU VRAM 調整
+    device=0,                               # 使用 GPU:0；若要用 CPU，改成 device="cpu"
+    stream=True,                            # 逐張圖片推論
+    save=True,                              # 是否輸出預測結果圖片
+    save_txt=True,                         # 是否輸出預測結果文字檔
+    save_conf=True,                        # 在文字檔中包含信心分數
+    conf=0.45,                             # 信心分數閾值（預設值0.25）- 提高 conf（例如 0.45 → 0.55）減少誤報（Precision ↑，Recall ↓），降低 conf（例如 0.35 → 0.25）增加檢出率（Recall ↑，Precision ↓）
+    iou=0.45,                              # NMS 的 IoU 閾值（預設值0.45）,調整此值會影響 mAP,提高 iou → 保留更多重疊框（Recall ↑，Precision ↓，可能重複偵測）,降低 iou → 更嚴格地去除重疊框（Precision ↑，Recall ↓,可能漏檢）
+    max_det=300,                           # 每張圖片的最大檢測數量
+
 )
 
-print("✅ 預測完成！\n預測數量:", len(results))
-print('預測類別 : ',results[260].boxes.cls[0].item())
+# ✅ 把 generator 轉成 list
+results = list(results)
+
+# 結束計時
+end_time = time.time()
+elapsed = end_time - start_time
+minutes = elapsed / 60
+total_time = end_time - start_time
+num_images = len(results)
+fps = num_images / total_time if total_time > 0 else 0
+
+print(f"✅ 預測完成！總推論時間: 約 {minutes:.2f} 分鐘")
+print(f"圖片數量: {num_images}")
+print(f"平均推論時間: {total_time/num_images*1000:.2f} ms/張")
+print(f"FPS: {fps:.2f}")
+
+# 收集所有信心分數
+all_confs = []
+for r in results:
+    if len(r.boxes) > 0:
+        all_confs.extend(r.boxes.conf.cpu().numpy())
+
+if len(all_confs) > 0:
+    all_confs = np.array(all_confs)
+    print(f"信心分數平均值: {all_confs.mean():.4f}")
+    print(f"信心分數最大值: {all_confs.max():.4f}")
+    print(f"信心分數最小值: {all_confs.min():.4f}")
+else:
+    print("⚠️ 沒有任何預測框，無法計算信心分數統計")
+
+# print("✅ 預測完成！\n預測數量:", len(results))
+# print('預測類別 : ',results[260].boxes.cls[0].item())
 print('預測信心分數 : ',results[260].boxes.conf[0].item())
 print('預測框座標 : ',results[260].boxes.xyxy[0].tolist())
+
+# GPU 記憶體用量
+if torch.cuda.is_available():
+    mem = torch.cuda.max_memory_allocated() / (1024 ** 2)
+    print(f"GPU 記憶體用量: {mem:.2f} MB")
 
 # 建立輸出資料夾
 os.makedirs("./predict_txt", exist_ok=True)
